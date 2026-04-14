@@ -1,9 +1,11 @@
-﻿namespace OwnRedis.Core.Inrerfaces;
+﻿using OwnRedis.Core.Objects;
+
+namespace OwnRedis.Core.Inrerfaces;
 
 public interface ICacheMethodsService
 {
     Task<CacheObject?> GetAsync(string key);
-    Task SetAsync(string key, CacheObject value, double secondsTLL);
+    Task SetAsync(string key, CacheObject value, TimeSpan secondsTLL);
     Task<CacheObject?> DeleteAsync(string key);
     Task<bool> ExistsAsync(string key);
     Task<object> GetAdminStatsAsync();

@@ -1,4 +1,4 @@
-﻿namespace OwnRedis.Core;
+﻿namespace OwnRedis.Core.Objects;
 
 public class CacheObject
 {

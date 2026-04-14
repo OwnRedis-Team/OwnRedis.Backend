@@ -1,235 +1,176 @@
-﻿using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.DependencyInjection;
+﻿using Microsoft.Extensions.Options;
+using OwnRedis.Core;
 using OwnRedis.Core.Inrerfaces;
+using OwnRedis.Core.Objects;
 using OwnRedis.Server.Database;
-using System.Text.Encodings.Web;
-using System.Text.Json;
-
-namespace OwnRedis.Core;
 
 public class DefaultMethodsService : ICacheMethodsService
 {
-    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly IDateTimeProvider _clock;
+    private readonly ICacheTtlPolicy _ttlPolicy;
+    private readonly IRamCacheStorage _ram;
+    private readonly IFallbackCacheStorage _fallback;
+    private readonly ICacheRepository _repository;
+    private readonly ICacheSerializer _serializer;
+    private readonly IOptions<CacheTtlSettings> _ttlSettings;
 
-    public DefaultMethodsService(IServiceScopeFactory scopeFactory)
+    public DefaultMethodsService(
+        IDateTimeProvider clock,
+        ICacheTtlPolicy ttlPolicy,
+        IRamCacheStorage ram,
+        IFallbackCacheStorage fallback,
+        ICacheRepository repository,
+        ICacheSerializer serializer,
+        IOptions<CacheTtlSettings> ttlSettings)
     {
-        _scopeFactory = scopeFactory;
+        _clock = clock;
+        _ttlPolicy = ttlPolicy;
+        _ram = ram;
+        _fallback = fallback;
+        _repository = repository;
+        _serializer = serializer;
+        _ttlSettings = ttlSettings;
     }
 
-    //TODO: рефакторинг разделение на методы/уровни
     public async Task<CacheObject?> GetAsync(string key)
     {
-        var now = DateTimeOffset.UtcNow;
+        var now = _clock.UtcNow;
 
-        // 1. RAM
-        if (Storage.Cache.TryGetValue(key, out var ramValue))
-        {
-            if (ramValue.TTL > now) return ramValue;
+        var fromRam = TryGetFromRam(key, now);
+        if (fromRam != null) return fromRam;
 
-            if (Storage.Cache.TryRemove(key, out var expiredValue))
-            {
-                expiredValue.TTL = now.AddSeconds(15); //TODO: ~settings.json, конфигурация
-                FallbackStorage.Cache[key] = expiredValue;
-                AdminLogger.Log($"TTL истек: '{key}' перемещен в Fallback");
-            }
-        }
+        var fromFallback = TryGetFromFallback(key, now);
+        if (fromFallback != null) return fromFallback;
 
-        // 2. Fallback
-        if (FallbackStorage.Cache.TryGetValue(key, out var fallbackValue))
-        {
-            if (fallbackValue.TTL > now)
-            {
-                Storage.Cache[key] = fallbackValue;
-                return fallbackValue;
-            }
-            FallbackStorage.Cache.TryRemove(key, out _);
-        }
-
-        //TODO: в отдельном сервисе
-        // 3. Database
-        using (var scope = _scopeFactory.CreateScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<RedisDbContext>();
-            var dbItem = await db.CacheItems.AsNoTracking().FirstOrDefaultAsync(x => x.Key == key);
-
-            if (dbItem != null)
-            {
-                //dbttl 
-                if (dbItem.TTL.ToUniversalTime() > now)
-                {
-                    var rawJson = JsonSerializer.Deserialize<JsonElement>(dbItem.ValueJson);
-
-                    object? processedValue = rawJson.ValueKind switch
-                    {
-                        JsonValueKind.Array => JsonSerializer.Deserialize<List<object>>(dbItem.ValueJson),
-                        JsonValueKind.Object => JsonSerializer.Deserialize<Dictionary<string, object>>(dbItem.ValueJson),
-                        _ => JsonSerializer.Deserialize<object>(dbItem.ValueJson)
-                    };
-
-                    var newRamTTL = now.AddSeconds(dbItem.OriginalTTLSeconds);
-
-                    var cacheObj = new CacheObject
-                    {
-                        Value = processedValue ?? "empty",
-                        TTL = newRamTTL
-                    };
-
-                    // Поднимаем в оперативку
-                    Storage.Cache[key] = cacheObj;
-
-                    // Обновляем TTL в базе данных (даем новый запас 10 минут от нового TTL)
-                    await UpdateDatabaseTtlAsync(key, newRamTTL.AddMinutes(10)); //TODO: ~settings.json, конфигурация
-                    
-
-                    AdminLogger.Log($"Восстановление: '{key}' поднят из БД. Новый RAM TTL: {newRamTTL:T}");
-                    return cacheObj;
-                }
-
-                //протух dbttl
-                db.CacheItems.Remove(dbItem);
-                await db.SaveChangesAsync();
-
-                AdminLogger.Log($"Очистка: '{key}' окончательно удален из БД (время вышло)");
-            }
-        }
-        return null;
+        return await GetFromDatabaseAsync(key, now);
     }
 
-    public async Task SetAsync(string key, CacheObject value, double secondsTTL)
+    public async Task SetAsync(string key, CacheObject value, TimeSpan secondsTTL)
     {
-        var now = DateTimeOffset.UtcNow; //TODO: сервис для даты
+        var now = _clock.UtcNow;
 
-        //TTL для RAM
-        value.TTL = now.AddSeconds(secondsTTL).ToUniversalTime();
-        Storage.Cache[key] = value;
-
-        // TTL для базы (???)
-        var dbTtl = value.TTL.AddMinutes(10);
-
-        using (var scope = _scopeFactory.CreateScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<RedisDbContext>();
-
-            var options = new JsonSerializerOptions
-            {
-                Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-                WriteIndented = true
-            };
-
-            var jsonString = JsonSerializer.Serialize(value.Value, options);
-            var existing = await db.CacheItems.FirstOrDefaultAsync(x => x.Key == key);
-
-            if (existing != null)
-            {
-                existing.ValueJson = jsonString;
-                existing.TTL = dbTtl;
-                existing.OriginalTTLSeconds = secondsTTL;
-            }
-            else
-            {
-                await db.CacheItems.AddAsync(new DbCacheItem
-                {
-                    Key = key,
-                    ValueJson = jsonString,
-                    TTL = dbTtl,
-                    OriginalTTLSeconds = secondsTTL
-                });
-            }
-
-            await db.SaveChangesAsync();
-            AdminLogger.Log($"Set: '{key}' (RAM: {secondsTTL}s, DB запас до {dbTtl:T})");
-        }
-    }
-
-    // Вспомогательный метод для ttl в БД при GET
-    private async Task UpdateDatabaseTtlAsync(string key, DateTimeOffset newDbTtl)
-    {
-        try
-        {
-            using var scope = _scopeFactory.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<RedisDbContext>();
-            var item = await db.CacheItems.FirstOrDefaultAsync(x => x.Key == key);
-            if (item != null)
-            {
-                item.TTL = newDbTtl;
-                await db.SaveChangesAsync();
-            }
-        }
-        catch (Exception ex)
-        {
-            AdminLogger.Log($"Ошибка обновления TTL в БД для '{key}': {ex.Message}");
-        }
+        SetInRam(key, value, now, secondsTTL);
+        await SaveToDatabaseAsync(key, value, secondsTTL);
     }
 
     public async Task<CacheObject?> DeleteAsync(string key)
     {
-        Storage.Cache.TryRemove(key, out var ramVal);
-        FallbackStorage.Cache.TryRemove(key, out _);
-
-        using (var scope = _scopeFactory.CreateScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<RedisDbContext>();
-            var dbItem = await db.CacheItems.FirstOrDefaultAsync(x => x.Key == key);
-            if (dbItem != null)
-            {
-                db.CacheItems.Remove(dbItem);
-                await db.SaveChangesAsync();
-            }
-        }
+        _ram.TryRemove(key, out var ramVal);
+        _fallback.TryRemove(key, out _);
+        await _repository.DeleteAsync(key);
         return ramVal;
     }
 
     public async Task<bool> ExistsAsync(string key)
     {
-        if (Storage.Cache.ContainsKey(key)) return true;
+        if (_ram.ContainsKey(key)) return true;
 
-        using (var scope = _scopeFactory.CreateScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<RedisDbContext>();
-            return await db.CacheItems.AnyAsync(x => x.Key == key && x.TTL > DateTimeOffset.UtcNow);
-        }
+        var now = _clock.UtcNow;
+        return await _repository.ExistsAsync(key, now);
     }
 
     public async Task<object> GetAdminStatsAsync()
     {
-        using var scope = _scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<RedisDbContext>();
+        var dbItems = await _repository.GetAllAsync();
 
-        var dbItems = await db.CacheItems.AsNoTracking().ToListAsync();
         var allKeysMap = new Dictionary<string, (string Location, DateTimeOffset TTL)>();
 
         foreach (var item in dbItems)
-        {
             allKeysMap[item.Key] = ("Database", item.TTL);
-        }
 
-        foreach (var kvp in FallbackStorage.Cache)
-        {
-            allKeysMap[kvp.Key] = ("Fallback", kvp.Value.TTL);
-        }
+        foreach (var kvp in _fallback.Keys)
+            if (_fallback.TryGetValue(kvp, out var val))
+                allKeysMap[kvp] = ("Fallback", val.TTL);
 
-        foreach (var kvp in Storage.Cache)
-        {
-            allKeysMap[kvp.Key] = ("RAM", kvp.Value.TTL);
-        }
+        foreach (var kvp in _ram.Keys)
+            if (_ram.TryGetValue(kvp, out var val))
+                allKeysMap[kvp] = ("RAM", val.TTL);
 
-        var allKeysList = allKeysMap.Select(x => new
-        {
-            key = x.Key,
-            location = x.Value.Location,
-            ttl = x.Value.TTL
-        })
-        .OrderBy(x => x.key)
-        .ToList();
+        var allKeysList = allKeysMap
+            .Select(x => new { key = x.Key, location = x.Value.Location, ttl = x.Value.TTL })
+            .OrderBy(x => x.key)
+            .ToList();
 
         return new
         {
-            storageCount = Storage.Cache.Count,
-            fallbackCount = FallbackStorage.Cache.Count,
+            storageCount = _ram.Count,
+            fallbackCount = _fallback.Count,
             databaseCount = dbItems.Count,
             allKeys = allKeysList,
             logs = AdminLogger.Logs.ToArray().Reverse(),
             memoryUsage = AdminLogger.GetMemoryUsage()
         };
+    }
+
+    private CacheObject? TryGetFromRam(string key, DateTimeOffset now)
+    {
+        if (!_ram.TryGetValue(key, out var ramValue)) return null;
+
+        if (ramValue.TTL > now) return ramValue;
+
+        if (_ram.TryRemove(key, out var expiredValue))
+        {
+            expiredValue.TTL = _ttlPolicy.GetFallbackTtl(now);
+            _fallback.Set(key, expiredValue);
+            AdminLogger.Log($"TTL истек: '{key}' перемещен в Fallback");
+        }
+
+        return null;
+    }
+
+    private CacheObject? TryGetFromFallback(string key, DateTimeOffset now)
+    {
+        if (!_fallback.TryGetValue(key, out var fallbackValue)) return null;
+
+        if (fallbackValue.TTL > now)
+        {
+            _ram.Set(key, fallbackValue);
+            return fallbackValue;
+        }
+
+        _fallback.TryRemove(key, out _);
+        return null;
+    }
+
+    private async Task<CacheObject?> GetFromDatabaseAsync(string key, DateTimeOffset now)
+    {
+        var dbItem = await _repository.GetByKeyAsync(key);
+        if (dbItem == null) return null;
+
+        if (dbItem.TTL.ToUniversalTime() <= now)
+        {
+            await _repository.DeleteAsync(key);
+            AdminLogger.Log($"Очистка: '{key}' окончательно удален из БД (время вышло)");
+            return null;
+        }
+
+        var processedValue = _serializer.Deserialize(dbItem.ValueJson);
+        var newRamTTL = now + TimeSpan.FromSeconds(dbItem.OriginalTTLSeconds);
+
+        var cacheObj = new CacheObject
+        {
+            Value = processedValue ?? "empty",
+            TTL = newRamTTL
+        };
+
+        _ram.Set(key, cacheObj);
+        await _repository.UpdateTtlAsync(key, newRamTTL + _ttlSettings.Value.FallbackToDb);
+
+        AdminLogger.Log($"Восстановление: '{key}' поднят из БД. Новый RAM TTL: {newRamTTL:T}");
+        return cacheObj;
+    }
+
+    private void SetInRam(string key, CacheObject value, DateTimeOffset now, TimeSpan ttl)
+    {
+        value.TTL = now + ttl;
+        _ram.Set(key, value);
+    }
+
+    private async Task SaveToDatabaseAsync(string key, CacheObject value, TimeSpan ttl)
+    {
+        var dbTtl = value.TTL + _ttlSettings.Value.FallbackToDb;
+        var jsonString = _serializer.Serialize(value.Value);
+        await _repository.SaveAsync(key, jsonString, dbTtl, ttl);
+        AdminLogger.Log($"Set: '{key}' (RAM: {ttl}s, DB запас до {dbTtl:T})");
     }
 }

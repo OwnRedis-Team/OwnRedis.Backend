@@ -1,15 +1,31 @@
 using Microsoft.EntityFrameworkCore;
 using OwnRedis.Core;
 using OwnRedis.Core.Inrerfaces;
+using OwnRedis.Core.Objects;
 using OwnRedis.Server.Database;
+using OwnRedis.Server.Services.TTL;
+using OwnRedis.Server.Storages;
 //TODO: нужна-ли пользователю БД как 3 слой
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddOpenApi();
 
-builder.Services.AddSingleton<ICacheMethodsService, DefaultMethodsService>();
-builder.Services.AddHostedService<CheckTTLService>();
+builder.Services.Configure<CacheTtlSettings>(
+    builder.Configuration.GetSection("CacheTtlSettings"));
+
+builder.Services.AddSingleton<IDateTimeProvider, SystemDateTimeProvider>();
+builder.Services.AddSingleton<ICacheTtlPolicy, CacheTtlPolicy>();
+builder.Services.AddSingleton<IRamCacheStorage, InMemoryRamCacheStorage>();
+builder.Services.AddSingleton<IFallbackCacheStorage, InMemoryFallbackCacheStorage>();
+builder.Services.AddSingleton<ICacheSerializer, JsonCacheSerializer>();
+
+builder.Services.AddScoped<ICacheRepository, EfCacheRepository>();
+builder.Services.AddScoped<ICacheMethodsService, DefaultMethodsService>();
+
+builder.Services.AddHostedService<RamTtlBackgroundService>();
+builder.Services.AddHostedService<FallbackTtlBackgroundService>();
+builder.Services.AddHostedService<DatabaseCleanupBackgroundService>();
 
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
 builder.Services.AddDbContext<RedisDbContext>(options =>
