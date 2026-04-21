@@ -6,7 +6,6 @@ using OwnRedis.Server.Database;
 using OwnRedis.Server.Services;
 using OwnRedis.Server.Services.TTL;
 using OwnRedis.Server.Storages;
-//TODO: нужна-ли пользователю БД как 3 слой
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -15,13 +14,27 @@ builder.Services.AddOpenApi();
 builder.Services.Configure<CacheTtlSettings>(
     builder.Configuration.GetSection("CacheTtlSettings"));
 
+builder.Services.Configure<CacheOptions>(
+    builder.Configuration.GetSection("CacheOptions"));
+
+
 builder.Services.AddSingleton<IDateTimeProvider, SystemDateTimeProvider>();
 builder.Services.AddSingleton<ICacheTtlPolicy, CacheTtlPolicy>();
 builder.Services.AddSingleton<IRamCacheStorage, InMemoryRamCacheStorage>();
 builder.Services.AddSingleton<IFallbackCacheStorage, InMemoryFallbackCacheStorage>();
 builder.Services.AddSingleton<ICacheSerializer, JsonCacheSerializer>();
 
-builder.Services.AddScoped<ICacheRepository, EfCacheRepository>();
+var useDb = builder.Configuration.GetValue<bool>("CacheOptions:UseDatabaseLayer");
+
+if (useDb)
+{
+    builder.Services.AddScoped<ICacheRepository, EfCacheRepository>();
+}
+else
+{
+    builder.Services.AddScoped<ICacheRepository, NoopCacheRepository>();
+}
+
 builder.Services.AddScoped<ICacheMethodsService, DefaultMethodsService>();
 builder.Services.AddScoped<ICacheMethodsHelper, DefaultMethodsHelper>();
 

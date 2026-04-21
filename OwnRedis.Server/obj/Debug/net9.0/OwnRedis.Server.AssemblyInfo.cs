@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("OwnRedis.Server")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+5bfd27210be00bbf079dae21d25f2c495a982c86")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+de9bf653724e5e167652f918963096a1e8e50d18")]
 [assembly: System.Reflection.AssemblyProductAttribute("OwnRedis.Server")]
 [assembly: System.Reflection.AssemblyTitleAttribute("OwnRedis.Server")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
