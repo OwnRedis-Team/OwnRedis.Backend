@@ -3,6 +3,7 @@ using OwnRedis.Core;
 using OwnRedis.Core.Inrerfaces;
 using OwnRedis.Core.Objects;
 using OwnRedis.Server.Database;
+using OwnRedis.Server.Services;
 using OwnRedis.Server.Services.TTL;
 using OwnRedis.Server.Storages;
 //TODO: нужна-ли пользователю БД как 3 слой
@@ -22,6 +23,7 @@ builder.Services.AddSingleton<ICacheSerializer, JsonCacheSerializer>();
 
 builder.Services.AddScoped<ICacheRepository, EfCacheRepository>();
 builder.Services.AddScoped<ICacheMethodsService, DefaultMethodsService>();
+builder.Services.AddScoped<ICacheMethodsHelper, DefaultMethodsHelper>();
 
 builder.Services.AddHostedService<RamTtlBackgroundService>();
 builder.Services.AddHostedService<FallbackTtlBackgroundService>();
@@ -33,8 +35,8 @@ builder.Services.AddDbContext<RedisDbContext>(options =>
 
 var app = builder.Build();
 
-app.UseDefaultFiles(); // ищет index.html
-app.UseStaticFiles(); //для админки
+app.UseDefaultFiles();
+app.UseStaticFiles();
 
 //Get
 app.MapGet("/api/cache/{key}", async (string key, ICacheMethodsService service) => 

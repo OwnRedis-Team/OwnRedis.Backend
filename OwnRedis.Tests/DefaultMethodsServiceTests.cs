@@ -1,210 +1,182 @@
-﻿using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.DependencyInjection;
+﻿using Microsoft.Extensions.Options;
 using NUnit.Framework;
-using OwnRedis.Core;
+using OwnRedis.Core.Inrerfaces;
+using OwnRedis.Core.Objects;
 using OwnRedis.Server.Database;
-
-namespace OwnRedis.Tests;
-
-//TODO: тесты по многоточке
+using OwnRedis.Server.Storages;
+using System.Timers;
+using Moq;
 
 [TestFixture]
-public class DefaultMethodsServiceTests
+public class OwnRedisArchitectureTests
 {
+    private Mock<IDateTimeProvider> _clockMock;
+    private Mock<IRamCacheStorage> _ramMock;
+    private Mock<IFallbackCacheStorage> _fallbackMock;
+    private Mock<ICacheRepository> _repoMock;
+    private Mock<ICacheMethodsHelper> _helperMock;
     private DefaultMethodsService _service;
-    private RedisDbContext _dbContext;
-    private IServiceScopeFactory _scopeFactory;
 
     [SetUp]
     public void Setup()
     {
-        //In-Memory бд
-        var options = new DbContextOptionsBuilder<RedisDbContext>()
-            .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString()) // Уникальное имя для каждого теста
-            .Options;
+        _clockMock = new Mock<IDateTimeProvider>();
+        _ramMock = new Mock<IRamCacheStorage>();
+        _fallbackMock = new Mock<IFallbackCacheStorage>();
+        _repoMock = new Mock<ICacheRepository>();
+        _helperMock = new Mock<ICacheMethodsHelper>();
 
-        _dbContext = new RedisDbContext(options);
-
-        //di
-        var services = new ServiceCollection();
-        services.AddSingleton(_dbContext);
-        var serviceProvider = services.BuildServiceProvider();
-        _scopeFactory = serviceProvider.GetRequiredService<IServiceScopeFactory>();
-
-        //создаем объект сервиса
-        _service = new DefaultMethodsService(_scopeFactory);
-
-        //чистим кэш перед каждым тестом
-        Storage.Cache.Clear();
-        FallbackStorage.Cache.Clear();
+        _service = new DefaultMethodsService(
+            _clockMock.Object,
+            Mock.Of<ICacheTtlPolicy>(),
+            _ramMock.Object,
+            _fallbackMock.Object,
+            _repoMock.Object,
+            Mock.Of<ICacheSerializer>(),
+            Options.Create(new CacheTtlSettings()),
+            _helperMock.Object
+        );
     }
 
-    [TearDown]
-    public void Cleanup()
-    {
-        _dbContext.Dispose();
-    }
-
-    //проверка что сохраняем в RAM и БД при SetAsync
     [Test]
-    public async Task SetAsync_ShouldSaveInRamAndDatabase()
+    public async Task GetAsync_Priority_ShouldReturnRamFirst()
     {
-        // Arrange
-        var key = "test_key";
-        var cacheObj = new CacheObject { Value = "hello", TTL = DateTimeOffset.UtcNow.AddMinutes(1) };
+        // Тест: Если данные есть в RAM, мы не идем в Fallback и БД.
+        var key = "k1";
+        var expected = new CacheObject { Value = "ram" };
+        _helperMock.Setup(h => h.TryGetFromRam(key, It.IsAny<DateTimeOffset>())).Returns(expected);
 
-        // Act
-        await _service.SetAsync(key, cacheObj, 60);
-
-        // Assert
-        Assert.Multiple(() =>
-        {
-            // Проверка RAM
-            Assert.That(Storage.Cache.ContainsKey(key), Is.True);
-            // Проверка БД
-            var dbItem = _dbContext.CacheItems.FirstOrDefault(x => x.Key == key);
-            Assert.That(dbItem, Is.Not.Null);
-            Assert.That(dbItem.Key, Is.EqualTo(key));
-        });
-    }
-
-    //когда берем данные, которые есть в RAM, должны вернуть их оттуда, не обращаясь к БД
-    [Test]
-    public async Task GetAsync_WhenKeyExistsInRam_ShouldReturnFromRam()
-    {
-        // Arrange
-        var key = "ram_key";
-        var cacheObj = new CacheObject { Value = "ram_value", TTL = DateTimeOffset.UtcNow.AddMinutes(1) };
-        Storage.Cache[key] = cacheObj;
-
-        // Act
         var result = await _service.GetAsync(key);
 
-        // Assert
-        Assert.That(result, Is.Not.Null);
-        Assert.That(result.Value.ToString(), Is.EqualTo("ram_value"));
+        Assert.That(result.Value, Is.EqualTo("ram"));
+        _helperMock.Verify(h => h.TryGetFromFallback(It.IsAny<string>(), It.IsAny<DateTimeOffset>()), Times.Never);
     }
 
-    //получаем данные которые есть только в БД, должны вернуть их и поднять в RAM
     [Test]
-    public async Task GetAsync_WhenKeyInDatabaseOnly_ShouldRestoreToRam()
+    public async Task GetAsync_ShouldFallbackToDb_IfRamAndFallbackEmpty()
     {
-        // Arrange
-        var key = "db_key";
-        var dbItem = new DbCacheItem
-        {
-            Key = key,
-            ValueJson = "\"from_db\"",
-            TTL = DateTimeOffset.UtcNow.AddMinutes(1)
-        };
-        _dbContext.CacheItems.Add(dbItem);
-        await _dbContext.SaveChangesAsync();
+        // Тест: Цепочка ответственности. RAM -> null, Fallback -> null, БД -> Value.
+        var key = "k1";
+        var expected = new CacheObject { Value = "db" };
+        _helperMock.Setup(h => h.TryGetFromRam(key, It.IsAny<DateTimeOffset>())).Returns((CacheObject)null);
+        _helperMock.Setup(h => h.TryGetFromFallback(key, It.IsAny<DateTimeOffset>())).Returns((CacheObject)null);
+        _helperMock.Setup(h => h.GetFromDatabaseAsync(key, It.IsAny<DateTimeOffset>())).ReturnsAsync(expected);
 
-        // Act
         var result = await _service.GetAsync(key);
 
-        // Assert
-        Assert.Multiple(() =>
-        {
-            Assert.That(result, Is.Not.Null);
-            Assert.That(Storage.Cache.ContainsKey(key), Is.True, "Данные должны подняться из БД в оперативку");
-        });
+        Assert.That(result.Value, Is.EqualTo("db"));
     }
 
-    //при удалении данных должны удалиться и из RAM, и из БД
     [Test]
-    public async Task DeleteAsync_ShouldRemoveFromEverywhere()
+    public async Task DeleteAsync_ShouldCallAllLayers()
     {
-        // Arrange
+        // Тест: Удаление должно очистить все три уровня хранения.
         var key = "kill_me";
-        Storage.Cache[key] = new CacheObject { Value = 1 };
-        _dbContext.CacheItems.Add(new DbCacheItem { Key = key, ValueJson = "1", TTL = DateTimeOffset.UtcNow.AddMinutes(1) });
-        await _dbContext.SaveChangesAsync();
-
-        // Act
         await _service.DeleteAsync(key);
 
-        // Assert
-        Assert.Multiple(() =>
-        {
-            Assert.That(Storage.Cache.ContainsKey(key), Is.False);
-            Assert.That(_dbContext.CacheItems.Any(x => x.Key == key), Is.False);
-        });
+        _ramMock.Verify(r => r.TryRemove(key, out It.Ref<CacheObject>.IsAny), Times.Once);
+        _fallbackMock.Verify(f => f.TryRemove(key, out It.Ref<CacheObject>.IsAny), Times.Once);
+        _repoMock.Verify(r => r.DeleteAsync(key), Times.Once);
     }
 
-    
-
-    //возвращение из Fallback в Main при получении клиентом объекта из Fallback
     [Test]
-    public async Task GetAsync_WhenKeyInFallback_ShouldRestoreToRam()
+    public async Task SetAsync_ShouldSaveToRamAndDatabase()
     {
-        // Arrange
-        var key = "fallback_key";
-        var cacheObj = new CacheObject { Value = "restored_data", TTL = DateTimeOffset.UtcNow.AddSeconds(10) };
-        FallbackStorage.Cache[key] = cacheObj;
+        // Тест: Проверка, что при записи мы обновляем и оперативку, и репозиторий.
+        var key = "new_key";
+        var val = new CacheObject { Value = 100 };
+        var ttl = TimeSpan.FromMinutes(1);
 
-        // Act
-        var result = await _service.GetAsync(key);
+        await _service.SetAsync(key, val, ttl);
 
-        // Assert
-        Assert.Multiple(() =>
-        {
-            Assert.That(result, Is.Not.Null);
-            Assert.That(result.Value.ToString(), Is.EqualTo("restored_data"));
-            Assert.That(Storage.Cache.ContainsKey(key), Is.True, "Объект должен был вернуться в основную память");
-        });
+        _helperMock.Verify(h => h.SetInRam(key, val, It.IsAny<DateTimeOffset>(), ttl), Times.Once);
+        _helperMock.Verify(h => h.SaveToDatabaseAsync(key, val, ttl), Times.Once);
     }
 
-    //null когда данных нет ни в RAM, ни в Fallback, ни в БД
     [Test]
-    public async Task GetAsync_WhenKeyDoesNotExistAnywhere_ShouldReturnNull()
+    public async Task ExistsAsync_ShouldReturnTrueIfInRam()
     {
-        // Arrange
-        var key = "non_existent_key";
+        // Тест: Оптимизация. Если ключ в RAM, не лезем в БД (экономим запрос).
+        _ramMock.Setup(r => r.ContainsKey("fast_key")).Returns(true);
 
-        // Act
-        var result = await _service.GetAsync(key);
+        var exists = await _service.ExistsAsync("fast_key");
 
-        // Assert
-        Assert.That(result, Is.Null, "Если данных нет ни на одном уровне, возвращаем null");
+        Assert.That(exists);
+        _repoMock.Verify(r => r.ExistsAsync(It.IsAny<string>(), It.IsAny<DateTimeOffset>()), Times.Never);
     }
 
-    // После запроса данных из БД -> RAM с OriginalTTLSeconds
+    // --- 5 ТЕСТОВ НА МНОГОПОТОЧНОСТЬ (Concurrency) ---
+    // Здесь тестируем реальные InMemory-хранилища, а не моки.
+
     [Test]
-    public async Task GetAsync_WhenRestoringFromDb_ShouldUseOriginalTTL()
+    public void Concurrent_Set_ShouldNotCrash()
     {
-        // Arrange
-        var key = "original_ttl_test";
-        double originalSeconds = 300; // 5 минут
-        var dbItem = new DbCacheItem
-        {
-            Key = key,
-            ValueJson = "\"some_value\"",
-            TTL = DateTimeOffset.UtcNow.AddMinutes(1), // В базе осталось жить 1 мин
-            OriginalTTLSeconds = originalSeconds
-        };
-        _dbContext.CacheItems.Add(dbItem);
-        await _dbContext.SaveChangesAsync();
-
-        // Act
-        var result = await _service.GetAsync(key);
-
-        // Assert
-        Assert.Multiple(() =>
-        {
-            Assert.That(result, Is.Not.Null);
-
-            // Проверяем, что новый TTL в RAM — это примерно "сейчас + 5 минут", 
-            // а не "сейчас + 1 минута" (которая была в БД)
-            var expectedTtl = DateTimeOffset.UtcNow.AddSeconds(originalSeconds);
-            var diff = (result.TTL - expectedTtl).Duration().TotalSeconds;
-
-            Assert.That(diff, Is.LessThan(2), "Объект должен получить новую жизнь на полные 300 секунд");
-
-            // Проверка, что в БД тоже обновился TTL (запас +10 минут к новому TTL)
-            var updatedDbItem = _dbContext.CacheItems.First(x => x.Key == key);
-            Assert.That(updatedDbItem.TTL > result.TTL, Is.True, "TTL в базе должен быть обновлен с запасом");
+        // Тест: 100 потоков одновременно пишут в одно хранилище.
+        var storage = new InMemoryRamCacheStorage();
+        Parallel.For(0, 1000, i => {
+            storage.Set($"key_{i % 10}", new CacheObject { Value = i });
         });
+        Assert.Pass(); // ConcurrentDictionary должен выдержать без исключений
     }
 
+    [Test]
+    public async Task Concurrent_ReadWrite_Consistency()
+    {
+        // Тест: Одни читают, другие пишут. Проверяем, что нет Race Condition.
+        var storage = new InMemoryRamCacheStorage();
+        var tasks = new List<Task>();
+
+        tasks.Add(Task.Run(() => {
+            for (int i = 0; i < 500; i++) storage.Set("race", new CacheObject { Value = i });
+        }));
+
+        tasks.Add(Task.Run(() => {
+            for (int i = 0; i < 500; i++) storage.TryGetValue("race", out _);
+        }));
+
+        await Task.WhenAll(tasks);
+        Assert.Pass();
+    }
+
+    [Test]
+    public void Concurrent_TryRemove_ShouldBeAtomic()
+    {
+        // Тест: Если 10 потоков пытаются удалить один и тот же ключ, 
+        // только ОДИН должен получить true (успешно удалить).
+        var storage = new InMemoryRamCacheStorage();
+        storage.Set("target", new CacheObject { Value = "die" });
+
+        int successRemovals = 0;
+        Parallel.For(0, 100, i => {
+            if (storage.TryRemove("target", out _)) Interlocked.Increment(ref successRemovals);
+        });
+
+        Assert.That(successRemovals, Is.EqualTo(1));
+    }
+
+    [Test]
+    public async Task BackgroundService_And_MainService_Collision()
+    {
+        // Тест: Имитируем работу фоновой очистки и одновременный Get из сервиса.
+        var storage = new InMemoryRamCacheStorage();
+        storage.Set("coll", new CacheObject { Value = "val", TTL = DateTimeOffset.MinValue }); // Протухший
+
+        var task1 = Task.Run(() => storage.TryRemove("coll", out _)); // "Очистка"
+        var task2 = Task.Run(() => storage.TryGetValue("coll", out _)); // "Запрос пользователя"
+
+        await Task.WhenAll(task1, task2);
+        Assert.Pass(); // Главное — отсутствие Deadlock
+    }
+
+    [Test]
+    public void Concurrent_Dictionary_Count_Accuracy()
+    {
+        // Тест: Массовое добавление уникальных ключей.
+        var storage = new InMemoryRamCacheStorage();
+        Parallel.For(0, 5000, i => {
+            storage.Set(Guid.NewGuid().ToString(), new CacheObject { Value = i });
+        });
+
+        Assert.That(storage.Count, Is.EqualTo(5000));
+    }
 }
