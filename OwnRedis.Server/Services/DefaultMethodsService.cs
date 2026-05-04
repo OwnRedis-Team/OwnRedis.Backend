@@ -7,12 +7,9 @@ using OwnRedis.Server.Database;
 public class DefaultMethodsService : ICacheMethodsService
 {
     private readonly IDateTimeProvider _clock;
-    private readonly ICacheTtlPolicy _ttlPolicy;
     private readonly IRamCacheStorage _ram;
     private readonly IFallbackCacheStorage _fallback;
     private readonly ICacheRepository _repository;
-    private readonly ICacheSerializer _serializer;
-    private readonly IOptions<CacheTtlSettings> _ttlSettings;
     private readonly ICacheMethodsHelper _helper;
 
     public DefaultMethodsService(
@@ -26,12 +23,9 @@ public class DefaultMethodsService : ICacheMethodsService
         ICacheMethodsHelper helper)
     {
         _clock = clock;
-        _ttlPolicy = ttlPolicy;
         _ram = ram;
         _fallback = fallback;
         _repository = repository;
-        _serializer = serializer;
-        _ttlSettings = ttlSettings;
         _helper = helper;
     }
 
@@ -39,13 +33,16 @@ public class DefaultMethodsService : ICacheMethodsService
     {
         var now = _clock.UtcNow;
 
-        var fromRam = _helper.TryGetFromRam(key, now);
-        if (fromRam != null) return fromRam;
-
-        var fromFallback = _helper.TryGetFromFallback(key, now);
-        if (fromFallback != null) return fromFallback;
-
-        return await _helper.GetFromDatabaseAsync(key, now);
+        try
+        {
+            var fromRam = _helper.TryGetFromRam(key, now);
+            return fromRam;
+        }
+        catch
+        {
+            var fromFallback = _helper.TryGetFromFallback(key, now);
+            return fromFallback;
+        }
     }
 
     public async Task SetAsync(string key, CacheObject value, TimeSpan secondsTTL)
@@ -53,7 +50,10 @@ public class DefaultMethodsService : ICacheMethodsService
         var now = _clock.UtcNow;
 
         _helper.SetInRam(key, value, now, secondsTTL);
+
         await _helper.SaveToDatabaseAsync(key, value, secondsTTL);
+
+        AdminLogger.Log($"Set/Update: '{key}' обновлен во всех слоях");
     }
 
     public async Task<CacheObject?> DeleteAsync(string key)
