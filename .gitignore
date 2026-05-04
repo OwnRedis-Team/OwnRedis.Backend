@@ -69,3 +69,30 @@ x86/
 
 # Publish Web Output
 *.[Pp]ublish.xml
+
+# Сборка и временные файлы
+bin/
+obj/
+[Xx]64/
+[Xx]86/
+    
+# Visual Studio
+.vs/
+*.user
+*.userosscache
+*.sln.docstates
+    
+# Свойства и кэш Rider / VS Code
+.idea/
+.vscode/
+    
+# Пользовательские настройки и секреты
+appsettings.json
+!appsettings.json
+# (Если хочешь игнорировать конкретно секреты, раскомментируй строку ниже)
+# appsettings.Development.json 
+    
+# БД (если база лежит в папке проекта)
+*.mdf
+*.ldf
+*.db
