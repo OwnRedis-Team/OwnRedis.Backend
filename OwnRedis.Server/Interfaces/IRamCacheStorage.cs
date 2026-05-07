@@ -13,6 +13,7 @@ namespace OwnRedis.Core.Inrerfaces
         bool TryRemove(string key, out CacheObject value);
         void Set(string key, CacheObject value);
         bool ContainsKey(string key);
+        IDictionary<string, CacheObject> GetAll();
         IEnumerable<string> Keys { get; }
         int Count { get; }
     }

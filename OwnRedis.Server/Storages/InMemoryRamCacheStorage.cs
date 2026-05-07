@@ -12,6 +12,8 @@ namespace OwnRedis.Server.Storages
         public bool TryRemove(string key, out CacheObject value) => _cache.TryRemove(key, out value);
         public void Set(string key, CacheObject value) => _cache[key] = value;
         public bool ContainsKey(string key) => _cache.ContainsKey(key);
+
+        public IDictionary<string, CacheObject> GetAll() => _cache.ToDictionary(k => k.Key, v => v.Value);
         public IEnumerable<string> Keys => _cache.Keys;
         public int Count => _cache.Count;
     }

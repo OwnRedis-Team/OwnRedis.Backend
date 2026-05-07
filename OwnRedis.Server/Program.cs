@@ -109,6 +109,15 @@ app.MapGet("/api/cache/exists/{key}", async (string key, ICacheMethodsService se
     return Results.Ok(new { exists });
 });
 
+app.MapGet("/api/cache/ram/all", (IRamCacheStorage ramStorage) =>
+{
+    var allData = ramStorage.GetAll();
+
+    if (!allData.Any()) return Results.NoContent();
+
+    return Results.Ok(allData);
+});
+
 app.MapGet("/api/admin/stats", async (ICacheMethodsService service) => 
 {
     if (service is DefaultMethodsService defaultService)

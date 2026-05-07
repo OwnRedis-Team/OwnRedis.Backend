@@ -72,6 +72,11 @@ public class DefaultMethodsService : ICacheMethodsService
         return await _repository.ExistsAsync(key, now);
     }
 
+    public IDictionary<string, CacheObject> GetAllFromRam()
+    {
+        return _ram.GetAll();
+    }
+
     public async Task<object> GetAdminStatsAsync()
     {
         var dbItems = await _repository.GetAllAsync();
