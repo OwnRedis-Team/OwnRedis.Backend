@@ -46,7 +46,23 @@ var connectionString = builder.Configuration.GetConnectionString("DefaultConnect
 builder.Services.AddDbContext<RedisDbContext>(options =>
     options.UseSqlServer(connectionString));
 
+//swagger
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+
 var app = builder.Build();
+
+//swagger только в development окружении
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI(options =>
+    {
+        // Настройка, чтобы Swagger открывался сразу по адресу /swagger
+        options.SwaggerEndpoint("/swagger/v1/swagger.json", "v1");
+        options.RoutePrefix = "swagger";
+    });
+}
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
