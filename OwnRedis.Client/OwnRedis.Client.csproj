@@ -3,6 +3,10 @@
 		<TargetFramework>net10.0</TargetFramework>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
+		<Title>OwnRedis</Title>
+		<Authors>Egor Salahov, Rustam Gamzatov</Authors>
+		<RepositoryUrl>https://github.com/OwnRedis-Team/OwnRedis.Backend</RepositoryUrl>
+		<Copyright>MIT</Copyright>
 	</PropertyGroup>
 
 	<ItemGroup>
@@ -12,5 +16,6 @@
 	<ItemGroup>
 		<ProjectReference Include="..\OwnRedis.Core\OwnRedis.Core.csproj" />
 	</ItemGroup>
+	
 </Project>
 

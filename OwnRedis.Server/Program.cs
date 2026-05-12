@@ -20,15 +20,19 @@ builder.Services.Configure<CacheOptions>(
 
 builder.Services.AddSingleton<IDateTimeProvider, SystemDateTimeProvider>();
 builder.Services.AddSingleton<ICacheTtlPolicy, CacheTtlPolicy>();
+
 builder.Services.AddSingleton<IRamCacheStorage, InMemoryRamCacheStorage>();
 builder.Services.AddSingleton<IFallbackCacheStorage, InMemoryFallbackCacheStorage>();
+
 builder.Services.AddSingleton<ICacheSerializer, JsonCacheSerializer>();
+
 
 var useDb = builder.Configuration.GetValue<bool>("CacheOptions:UseDatabaseLayer");
 
 if (useDb)
 {
     builder.Services.AddScoped<ICacheRepository, EfCacheRepository>();
+    builder.Services.AddHostedService<DatabaseCleanupBackgroundService>();
 }
 else
 {
@@ -40,7 +44,6 @@ builder.Services.AddScoped<ICacheMethodsHelper, DefaultMethodsHelper>();
 
 builder.Services.AddHostedService<RamTtlBackgroundService>();
 builder.Services.AddHostedService<FallbackTtlBackgroundService>();
-builder.Services.AddHostedService<DatabaseCleanupBackgroundService>();
 
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
 builder.Services.AddDbContext<RedisDbContext>(options =>
