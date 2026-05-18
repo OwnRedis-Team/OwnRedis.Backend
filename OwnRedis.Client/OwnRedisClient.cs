@@ -23,13 +23,10 @@ namespace OwnRedis.Client
             var response = await _httpClient.GetAsync($"/api/cache/{key}");
             if (!response.IsSuccessStatusCode) return default;
 
-            //Get возвращает CacheObject
-            var cacheObj = await response.Content.ReadFromJsonAsync<CacheObject>();
+            CacheObject? cacheObj = await response.Content.ReadFromJsonAsync<CacheObject>();
 
-            // Десериализуем Value в нужный тип T
             if (cacheObj?.Value == null) return default;
 
-            // Учитывая JsonCacheSerializer, Value - это JsonElement
             var json = cacheObj.Value.ToString();
             return System.Text.Json.JsonSerializer.Deserialize<T>(json);
         }

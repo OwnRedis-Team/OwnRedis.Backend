@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using OwnRedis.Core;
 using OwnRedis.Core.Inrerfaces;
 using OwnRedis.Core.Objects;
+using OwnRedis.Core.Objects.Snapshot;
 using OwnRedis.Server.Database;
 using OwnRedis.Server.Services;
 using OwnRedis.Server.Services.TTL;
@@ -16,6 +17,9 @@ builder.Services.Configure<CacheTtlSettings>(
 
 builder.Services.Configure<CacheOptions>(
     builder.Configuration.GetSection("CacheOptions"));
+
+builder.Services.Configure<SnapshotSettings>(
+    builder.Configuration.GetSection("SnapshotSettings"));
 
 
 builder.Services.AddSingleton<IDateTimeProvider, SystemDateTimeProvider>();
@@ -44,6 +48,7 @@ builder.Services.AddScoped<ICacheMethodsHelper, DefaultMethodsHelper>();
 
 builder.Services.AddHostedService<RamTtlBackgroundService>();
 builder.Services.AddHostedService<FallbackTtlBackgroundService>();
+builder.Services.AddHostedService<CacheSnapshotBackgroundService>();
 
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
 builder.Services.AddDbContext<RedisDbContext>(options =>
